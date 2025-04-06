@@ -36,3 +36,12 @@
 - 飞书多维表格 SDK
 
 ### 本地开发
+
+# 安装依赖
+npm install
+
+# 启动开发服务器
+npm run dev
+
+# 构建生产版本
+npm run build
