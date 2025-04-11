@@ -1,6 +1,9 @@
 import { bitable, FieldType } from '@lark-base-open/js-sdk';
 import axios from 'axios';
 
+// 定义后端 API 的基础 URL
+const API_BASE_URL = 'https://www.ccai.fun';
+
 // 定义视频数据的接口
 interface Video {
   nickname: string;
@@ -39,30 +42,29 @@ export const getVideosData = async (
   url: string,
   setPreviewInfo: (value: React.SetStateAction<string>) => void
 ) => {
-  // 构建数据结构
+  // 使用完整的请求 URL
+  const endpoint = '/api/video/doutikhub'; // 修改为与LinktoText一致的API路径
+  const requestUrl = `${API_BASE_URL}${endpoint}`;
+
+  // 构建数据结构，与LinktoText保持一致
   const data = {
     username: username,
     password: password,
+    platform: platform,
     url_type: linkType,
     url_process_type: updateMethod,
-    platform: platform,
-    raw_url_inputs: url,  // 保持为包含换行符的字符串
-    raw_url_input: '',
+    raw_url_inputs: url,
+    raw_url_input: null,
     page_turns: pageCount
   };
 
   try {
-    // 修改请求URL，使用相对路径
-    const baseUrl = '';  // 改为空字符串
-    const endpoint = '/api/video/doutikhub';
-    const requestUrl = `${baseUrl}${endpoint}`;
-
     // 显示请求信息
     setPreviewInfo(`发送请求到: ${requestUrl}\n请求数据:\n${JSON.stringify(data, null, 2)}`);
 
     setPreviewInfo(prev => prev + '\n开始发送请求...');
     // 发送POST请求
-    const response = await axios.post(requestUrl, data);
+    const response = await axios.post(requestUrl, data); // 使用完整的 URL
 
     setPreviewInfo(prev => prev + '\n开始解析响应数据...');
     // 解析响应数据
@@ -297,7 +299,13 @@ export const getVideosData = async (
     }
   } catch (error: any) {
     // 显示错误信息
-    setPreviewInfo(prev => prev + `\n\n请求出错:\n${error.message}`);
+    if (error instanceof Error && error.message.includes('Network Error')) {
+       setPreviewInfo(prev => prev + `\n\n请求出错: 网络错误。请检查后端服务器 (${API_BASE_URL}) 是否配置了正确的 CORS 策略。`);
+    } else if (axios.isAxiosError(error) && !error.response) {
+       setPreviewInfo(prev => prev + `\n\n请求出错: 网络错误或 CORS 策略阻止了请求。请检查后端服务器 (${API_BASE_URL}) 的 CORS 配置。`);
+    } else {
+       setPreviewInfo(prev => prev + `\n\n请求出错:\n${error.message}`);
+    }
     console.error('请求失败:', error);
   }
 }; 

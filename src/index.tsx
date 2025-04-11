@@ -2,12 +2,16 @@ import React, { useEffect, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import { bitable } from '@lark-base-open/js-sdk';
 import { Alert, AlertProps, Button, Select, Input, InputNumber, Card, Space } from 'antd';
-import { getVideosData} from './utils/get_videosdata';
-import { postVideotext, getVideotext } from './utils/get_videostext';
+import { getVideosData } from './utils/get_videosdata';
+import { processVideoTexts } from './utils/get_videostext';
 import * as XLSX from 'xlsx';
 import axios from 'axios';
 
 const { Option } = Select;
+
+// 定义后端 API 的基础 URL
+// const API_BASE_URL = 'https://www.ccai.fun';
+const API_BASE_URL = '';
 
 // 定义表格项的接口
 interface TableItem {
@@ -154,7 +158,7 @@ function LoadApp() {
       const fields = await table.getFieldMetaList();
       setPreviewInfo(prev => prev + `\n获取到 ${fields.length} 个字段`);
       
-      // 查找"文案"字段和"视频编号"字段
+      // 查找必要字段
       const textField = fields.find(field => field.name === '文案');
       const videoIdField = fields.find(field => field.name === '视频编号');
       
@@ -230,7 +234,7 @@ function LoadApp() {
                 video_text_arr: '',
                 task_id: '',
                 recordId: recordId,
-                duration: duration // 添加时长字段
+                duration: duration
               });
             } else {
               setPreviewInfo(prev => prev + `\n记录 ${recordId} 的视频编号为空，跳过`);
@@ -249,43 +253,26 @@ function LoadApp() {
       
       setPreviewInfo(prev => prev + `\n共有 ${videotexts.length} 个视频需要处理`);
       
-      // 5. 调用发送文案请求函数
-      videotexts = await postVideotext(videotexts, username, password, setPreviewInfo);
-
-      // 在调用postVideotext后
-      // 只考虑尚未获取到文案的记录的时长
-      const maxDuration = Math.max(
-        ...videotexts
-          .filter(item => !item.video_text_ori) // 过滤掉已有文案的记录
-          .map(item => item.duration || 0)
+      // 5. 执行四阶段文案处理流程
+      videotexts = await processVideoTexts(
+        videotexts, 
+        username, 
+        password, 
+        setPreviewInfo,
+        setTextButtonText
       );
-      const waitTime = Math.ceil(maxDuration / 1000 / 15); // 根据视频时长计算等待时间
-
-      setPreviewInfo(prev => prev + `\n等待${waitTime}秒，给后台处理时间...`);
-      setTextButtonText(`处理中(${waitTime}秒)`);
-
-      // 使用倒计时
-      for (let i = waitTime; i > 0; i--) {
-        setTextButtonText(`处理中(${i}秒)`);
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
-
-      setTextButtonText('开始获取文案');
-
-      // 6. 调用处理文案返回函数
-      videotexts = await getVideotext(videotexts, username, password, setPreviewInfo);
-
-      // 显示最终处理后的视频数据
-      setPreviewInfo(prev => prev + `\n最终处理后的视频数据:\n${JSON.stringify(videotexts, null, 2)}`);
       
-      // 7. 统一更新表格中的文案
+      // 6. 统一更新表格中的文案
       setPreviewInfo(prev => prev + '\n开始更新表格中的文案...');
       let updateCount = 0;
       
       for (const videoItem of videotexts) {
-        if (videoItem.video_text_ori && videoItem.recordId) {
+        // 优先使用整理后的文案，如果没有则使用原始文案
+        const finalText = videoItem.video_text_arr || videoItem.video_text_ori;
+        
+        if (finalText && videoItem.recordId) {
           try {
-            await table.setCellValue(textField.id, videoItem.recordId, videoItem.video_text_ori);
+            await table.setCellValue(textField.id, videoItem.recordId, finalText);
             updateCount++;
             setPreviewInfo(prev => prev + `\n成功更新记录 ${videoItem.recordId} 的文案`);
           } catch (error) {
@@ -304,6 +291,10 @@ function LoadApp() {
       }
     } finally {
       setTextButtonDisabled(false);
+      // 等待3秒后恢复按钮文本
+      setTimeout(() => {
+        setTextButtonText('开始获取文案');
+      }, 3000);
     }
   };
 
@@ -547,17 +538,17 @@ function LoadApp() {
         password: password
       };
 
-      // 修改请求URL，使用相对路径
-      const baseUrl = '';  // 改为空字符串
+      // 使用完整的请求 URL
+      // const baseUrl = ''; // 不再需要 baseUrl
       const endpoint = '/api/user/getUserInfo';
-      const requestUrl = `${baseUrl}${endpoint}`;
+      const requestUrl = `${API_BASE_URL}${endpoint}`; // 使用完整的 URL
 
       // 显示请求信息
       setPreviewInfo(`发送请求到: ${requestUrl}\n请求数据:\n${JSON.stringify(data, null, 2)}`);
 
       setPreviewInfo(prev => prev + '\n开始发送请求...');
       // 发送POST请求
-      const response = await axios.post(requestUrl, data);
+      const response = await axios.post(requestUrl, data); // 使用完整的 URL
 
       setPreviewInfo(prev => prev + '\n开始解析响应数据...');
       // 解析响应数据
@@ -573,7 +564,14 @@ function LoadApp() {
       setPreviewInfo(prev => prev + `\n用户积分信息获取成功!\n积分余额: ${responseData.bonus_points_balance}\n最新消耗: ${responseData.recent_deducted_points}`);
     } catch (error) {
       console.error('获取用户信息失败:', error);
-      setPreviewInfo(`获取用户信息失败: ${error instanceof Error ? error.message : String(error)}`);
+      // 检查是否是 CORS 错误
+      if (error instanceof Error && error.message.includes('Network Error')) {
+         setPreviewInfo(`获取用户信息失败: 网络错误。请检查后端服务器 (${API_BASE_URL}) 是否配置了正确的 CORS 策略以允许来自飞书域名的访问。`);
+      } else if (axios.isAxiosError(error) && !error.response) {
+         setPreviewInfo(`获取用户信息失败: 网络错误或 CORS 策略阻止了请求。请检查后端服务器 (${API_BASE_URL}) 的 CORS 配置。`);
+      } else {
+         setPreviewInfo(`获取用户信息失败: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   };
 

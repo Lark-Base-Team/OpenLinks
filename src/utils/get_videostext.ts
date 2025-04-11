@@ -1,230 +1,495 @@
 import React from 'react';
+import axios from 'axios';
+
+// 定义后端 API 的基础 URL
+const API_BASE_URL = 'https://www.ccai.fun';
+
+// 接口定义
+interface VideoText {
+  aweme_id: string;
+  play_addr?: string | null;
+  audio_addr?: string | null;
+  video_text_ori?: string | null;
+  video_text_arr?: string | null;
+  asr_task_id?: string | null;
+  llm_task_id_list?: any[] | null; // 实际上是 { conversation_id: string; chat_id: string }[]
+}
+
+interface VideoTextRequestPayload {
+  username: string;
+  password?: string;
+  videotext: VideoText;
+}
+
+interface VideoTextResponse {
+  message: string;
+  videotext: VideoText;
+  bonus_points_balance?: number | null;
+  recent_deducted_points?: number | null;
+}
 
 /**
- * 发送文案请求函数
- * @param videotexts 视频文案数据数组
- * @param username 用户名
- * @param password 密码
- * @param setPreviewInfo 更新预览信息的函数
- * @returns 更新后的videotexts数组
+ * 调用后端 API 启动视频原始文案获取任务 (ASR)
+ * 对应后端 /videotext/update-ori-post
  */
-export const postVideotext = async (
-  videotexts: any[],
+export const UpdateVideoTextOriPost = async (
   username: string,
   password: string,
+  videotext: VideoText,
   setPreviewInfo: (value: React.SetStateAction<string>) => void
-): Promise<any[]> => {
-  setPreviewInfo(prev => prev + `\n开始逐个发送文案更新请求...`);
-  
-  // 创建一个新数组，避免直接修改原数组
-  const updatedVideotexts = [...videotexts];
-  
-  // 逐个处理每个视频
-  for (let i = 0; i < updatedVideotexts.length; i++) {
-    const videoItem = updatedVideotexts[i];
-    
-    // 准备单个视频的请求数据，移除recordId和duration
-    const { recordId, duration, ...apiVideoItem } = videoItem;
-    
-    // 显示请求体内容
-    const requestBody = {
-      username,
-      password,
-      videotexts: [apiVideoItem] // 单个视频作为数组元素
-    };
-    
-    setPreviewInfo(prev => prev + `\n\n发送第 ${i+1}/${updatedVideotexts.length} 个请求:\n${JSON.stringify(requestBody, null, 2)}`);
-    
-    try {
-      const response = await fetch('/api/videotext/update-post', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(requestBody)
-      });
-      
-      if (!response.ok) {
-        throw new Error(`API请求失败: ${response.status} ${response.statusText}`);
-      }
-      
-      const result = await response.json();
-      
-      // 检查返回消息
-      if (result.message === "处理成功") {
-        // 处理API返回的结果
-        if (result.videotexts && Array.isArray(result.videotexts) && result.videotexts.length > 0) {
-          // 更新task_id和video_text_ori
-          const returnedItem = result.videotexts[0];
-          if (returnedItem) {
-            updatedVideotexts[i] = {
-              ...updatedVideotexts[i],
-              task_id: returnedItem.task_id || '',
-              video_text_ori: returnedItem.video_text_ori || ''
-            };
-            setPreviewInfo(prev => prev + `\n成功获取任务ID: ${returnedItem.task_id}`);
-            
-            // 如果已经有文案，显示文案
-            if (returnedItem.video_text_ori) {
-              setPreviewInfo(prev => prev + `\n已获取文案: ${returnedItem.video_text_ori.substring(0, 30)}...`);
-            }
-          }
-        } else {
-          setPreviewInfo(prev => prev + `\n警告: 返回数据格式不正确`);
-        }
-      } else {
-        setPreviewInfo(prev => prev + `\n警告: 请求未成功处理，消息: ${result.message}`);
-      }
-    } catch (error) {
-      setPreviewInfo(prev => prev + `\n发送请求失败: ${error}`);
+): Promise<VideoTextResponse> => {
+  const apiUrl = `${API_BASE_URL}/api/videotext/update-ori-post`;
+  const payload: VideoTextRequestPayload = {
+    username,
+    password,
+    videotext: {
+      aweme_id: videotext.aweme_id,
+      play_addr: videotext.play_addr || null,
+      audio_addr: videotext.audio_addr || null,
+      video_text_ori: null,
+      video_text_arr: null,
+      asr_task_id: null,
+      llm_task_id_list: null,
     }
-    
-    // 每个请求之间稍微延迟，避免API限制
-    await new Promise(resolve => setTimeout(resolve, 500));
+  };
+
+  setPreviewInfo(prev => prev + `\n发送视频 ${videotext.aweme_id} 原始文案请求...`);
+
+  try {
+    const response = await axios.post(apiUrl, payload);
+    const data = response.data;
+
+    if (data.bonus_points_balance !== undefined) {
+      setPreviewInfo(prev => prev + `\n当前积分余额: ${data.bonus_points_balance}`);
+    }
+
+    setPreviewInfo(prev => prev + `\n视频 ${videotext.aweme_id} 原始文案请求成功: ${data.message}`);
+    return data;
+  } catch (error: any) {
+    setPreviewInfo(prev => prev + `\n发送视频 ${videotext.aweme_id} 的原始文案请求失败: ${error.message}`);
+    throw error;
   }
-  
-  setPreviewInfo(prev => prev + `\n所有文案更新请求已发送`);
-  return updatedVideotexts;
 };
 
 /**
- * 处理文案返回函数
- * @param videotexts 视频文案数据数组
- * @param username 用户名
- * @param password 密码
- * @param setPreviewInfo 更新预览信息的函数
- * @returns 更新后的videotexts数组
+ * 调用后端 API 获取视频原始文案 (ASR) 的结果
+ * 对应后端 /videotext/update-ori-get
  */
-export const getVideotext = async (
+export const UpdateVideoTextOriGet = async (
+  username: string,
+  password: string,
+  videotext: VideoText,
+  setPreviewInfo: (value: React.SetStateAction<string>) => void
+): Promise<VideoTextResponse> => {
+  const apiUrl = `${API_BASE_URL}/api/videotext/update-ori-get`;
+  const payload: VideoTextRequestPayload = {
+    username,
+    password,
+    videotext: {
+      aweme_id: videotext.aweme_id,
+      asr_task_id: videotext.asr_task_id,
+      play_addr: null,
+      audio_addr: null,
+      video_text_ori: null,
+      video_text_arr: null,
+      llm_task_id_list: null,
+    }
+  };
+
+  setPreviewInfo(prev => prev + `\n获取视频 ${videotext.aweme_id} 原始文案结果...`);
+
+  try {
+    const response = await axios.post(apiUrl, payload);
+    const data = response.data;
+
+    if (data.bonus_points_balance !== undefined) {
+      setPreviewInfo(prev => prev + `\n当前积分余额: ${data.bonus_points_balance}`);
+    }
+
+    // 如果获取到了原始文案
+    if (data.videotext?.video_text_ori) {
+      setPreviewInfo(prev => prev + `\n视频 ${videotext.aweme_id} 原始文案获取成功`);
+    } else {
+      setPreviewInfo(prev => prev + `\n视频 ${videotext.aweme_id} 原始文案处理中: ${data.message}`);
+    }
+
+    return data;
+  } catch (error: any) {
+    setPreviewInfo(prev => prev + `\n获取视频 ${videotext.aweme_id} 的原始文案结果失败: ${error.message}`);
+    throw error;
+  }
+};
+
+/**
+ * 调用后端 API 启动视频文案整理任务 (Coze)
+ * 对应后端 /videotext/update-arr-post
+ */
+export const UpdateVideoTextArrPost = async (
+  username: string,
+  password: string,
+  videotext: VideoText,
+  setPreviewInfo: (value: React.SetStateAction<string>) => void
+): Promise<VideoTextResponse> => {
+  const apiUrl = `${API_BASE_URL}/api/videotext/update-arr-post`;
+  const payload: VideoTextRequestPayload = {
+    username,
+    password,
+    videotext: {
+      aweme_id: videotext.aweme_id,
+      play_addr: null,
+      audio_addr: null,
+      video_text_ori: null,
+      video_text_arr: null,
+      asr_task_id: null,
+      llm_task_id_list: null,
+    }
+  };
+
+  setPreviewInfo(prev => prev + `\n发送视频 ${videotext.aweme_id} 整理文案请求...`);
+
+  try {
+    const response = await axios.post(apiUrl, payload);
+    const data = response.data;
+
+    if (data.bonus_points_balance !== undefined) {
+      setPreviewInfo(prev => prev + `\n当前积分余额: ${data.bonus_points_balance}`);
+    }
+
+    if (data.videotext?.llm_task_id_list) {
+      setPreviewInfo(prev => prev + `\n视频 ${videotext.aweme_id} 整理文案请求成功`);
+    } else {
+      setPreviewInfo(prev => prev + `\n视频 ${videotext.aweme_id} 整理文案请求返回: ${data.message}`);
+    }
+
+    return data;
+  } catch (error: any) {
+    setPreviewInfo(prev => prev + `\n发送视频 ${videotext.aweme_id} 的整理文案请求失败: ${error.message}`);
+    throw error;
+  }
+};
+
+/**
+ * 调用后端 API 获取视频整理文案 (Coze) 的结果
+ * 对应后端 /videotext/update-arr-get
+ */
+export const UpdateVideoTextArrGet = async (
+  username: string,
+  password: string,
+  videotext: VideoText,
+  setPreviewInfo: (value: React.SetStateAction<string>) => void
+): Promise<VideoTextResponse> => {
+  const apiUrl = `${API_BASE_URL}/api/videotext/update-arr-get`;
+  
+  if (!videotext.llm_task_id_list || videotext.llm_task_id_list.length === 0) {
+    const errorMsg = '获取文案整理结果需要提供有效的 llm_task_id_list。';
+    setPreviewInfo(prev => prev + `\n错误: ${errorMsg}`);
+    throw new Error(errorMsg);
+  }
+
+  const payload: VideoTextRequestPayload = {
+    username,
+    password,
+    videotext: {
+      aweme_id: videotext.aweme_id,
+      llm_task_id_list: videotext.llm_task_id_list,
+      play_addr: null,
+      audio_addr: null,
+      video_text_ori: null,
+      video_text_arr: null,
+      asr_task_id: null,
+    }
+  };
+
+  setPreviewInfo(prev => prev + `\n获取视频 ${videotext.aweme_id} 整理文案结果...`);
+
+  try {
+    const response = await axios.post(apiUrl, payload);
+    const data = response.data;
+
+    if (data.bonus_points_balance !== undefined) {
+      setPreviewInfo(prev => prev + `\n当前积分余额: ${data.bonus_points_balance}`);
+    }
+
+    // 如果获取到了整理文案
+    if (data.videotext?.video_text_arr) {
+      setPreviewInfo(prev => prev + `\n视频 ${videotext.aweme_id} 整理文案获取成功`);
+    } else {
+      setPreviewInfo(prev => prev + `\n视频 ${videotext.aweme_id} 整理文案处理中: ${data.message}`);
+    }
+
+    return data;
+  } catch (error: any) {
+    setPreviewInfo(prev => prev + `\n获取视频 ${videotext.aweme_id} 的整理文案结果失败: ${error.message}`);
+    throw error;
+  }
+};
+
+/**
+ * 执行文案处理流程，按照四个阶段获取视频文案
+ * 1. 发送原始文案请求
+ * 2. 获取原始文案结果
+ * 3. 发送整理文案请求
+ * 4. 获取整理文案结果
+ */ 
+export const processVideoTexts = async (
   videotexts: any[],
   username: string,
   password: string,
-  setPreviewInfo: (value: React.SetStateAction<string>) => void
+  setPreviewInfo: (value: React.SetStateAction<string>) => void,
+  setButtonText: (text: string) => void
 ): Promise<any[]> => {
-  setPreviewInfo(prev => prev + '\n开始获取文案...');
+  const updatedVideotexts = [...videotexts];
+  const MAX_POLLING_ATTEMPTS = 12;
+  const POLLING_INTERVAL = 3000; // 3秒
+
+  // 处理状态跟踪
+  const processingErrors = new Map<string, string>();
+  const successfulVideos = new Set<string>();
   
-  // 创建一个新数组，避免直接修改原数组
-  let updatedVideotexts = [...videotexts];
-  
-  // 最大轮询次数，防止无限循环
-  const maxPollingCount = 10;
-  let pollingCount = 0;
-  
-  // 轮询直到所有视频都有文案或达到最大轮询次数
-  while (pollingCount < maxPollingCount) {
-    pollingCount++;
-    setPreviewInfo(prev => prev + `\n开始第 ${pollingCount} 轮文案获取...`);
+  try {
+    // 阶段1: 发送原始文案请求
+    setPreviewInfo(prev => prev + '\n开始发送原始文案请求...');
+    setButtonText(`原始文案请求中...`);
     
-    // 标记是否所有视频都有文案
-    let allHaveText = true;
-    
-    // 逐个获取每个视频的文案
     for (let i = 0; i < updatedVideotexts.length; i++) {
-      const videoItem = updatedVideotexts[i];
+      const video = updatedVideotexts[i];
+      setButtonText(`原始文案请求 ${i+1}/${updatedVideotexts.length}...`);
       
-      // 如果已经有文案，跳过
-      if (videoItem.video_text_ori) {
+      // 跳过已有文案的视频
+      if (video.video_text_ori) {
+        setPreviewInfo(prev => prev + `\n视频 ${video.aweme_id} 已有文案，跳过`);
         continue;
       }
-      
-      // 如果没有task_id，标记为未完成并跳过
-      if (!videoItem.task_id) {
-        allHaveText = false;
-        setPreviewInfo(prev => prev + `\n跳过没有任务ID的视频: ${videoItem.aweme_id}`);
-        continue;
-      }
-      
-      // 准备单个视频的请求数据，移除recordId和duration
-      const { recordId, duration, ...apiVideoItem } = videoItem;
-      
-      // 显示请求体内容
-      const getRequestBody = {
-        username,
-        password,
-        videotexts: [apiVideoItem] // 单个视频作为数组元素
-      };
-      
-      setPreviewInfo(prev => prev + `\n\n获取第 ${i+1}/${updatedVideotexts.length} 个视频的文案:\n${JSON.stringify(getRequestBody, null, 2)}`);
       
       try {
-        const getResponse = await fetch('/api/videotext/update-get', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
+        const response = await UpdateVideoTextOriPost(
+          username, 
+          password, 
+          {
+            aweme_id: video.aweme_id,
+            play_addr: video.play_addr,
+            audio_addr: video.audio_addr
           },
-          body: JSON.stringify(getRequestBody)
-        });
+          setPreviewInfo
+        );
         
-        if (!getResponse.ok) {
-          throw new Error(`获取文案请求失败: ${getResponse.status} ${getResponse.statusText}`);
-        }
-        
-        const getResult = await getResponse.json();
-        
-        // 检查返回消息
-        if (getResult.message === "处理成功") {
-          // 处理获取文案的结果
-          if (getResult.videotexts && Array.isArray(getResult.videotexts)) {
-            // 获取文案内容 - 由于是单元素列表，直接取第一个元素
-            const apiItem = getResult.videotexts[0];
-            if (apiItem) {
-              const text = apiItem.video_text_ori || apiItem.video_text_arr || '';
-              
-              if (text) {
-                // 更新内存中的文案
-                updatedVideotexts[i] = {
-                  ...updatedVideotexts[i],
-                  video_text_ori: text
-                };
-                
-                setPreviewInfo(prev => prev + `\n成功获取视频 ${videoItem.aweme_id} 的文案: ${text.substring(0, 30)}...`);
-              } else {
-                // 标记为未完成
-                allHaveText = false;
-                setPreviewInfo(prev => prev + `\n视频 ${videoItem.aweme_id} 的文案尚未生成`);
-              }
-            } else {
-              // 标记为未完成
-              allHaveText = false;
-              setPreviewInfo(prev => prev + `\n警告: 返回的videotexts数组为空`);
-            }
-          } else {
-            // 标记为未完成
-            allHaveText = false;
-            setPreviewInfo(prev => prev + `\n警告: 返回数据格式不正确`);
-          }
+        // 检查是否获取到任务ID
+        if (response.videotext?.asr_task_id) {
+          updatedVideotexts[i].asr_task_id = response.videotext.asr_task_id;
+        } else if (response.message && response.message.includes("已有文案")) {
+          updatedVideotexts[i].already_has_text = true;
         } else {
-          // 标记为未完成
-          allHaveText = false;
-          setPreviewInfo(prev => prev + `\n警告: 请求未成功处理，消息: ${getResult.message}`);
+          processingErrors.set(video.aweme_id, `未获取到原始文案任务ID: ${response.message}`);
         }
-      } catch (error) {
-        // 标记为未完成
-        allHaveText = false;
-        setPreviewInfo(prev => prev + `\n获取文案失败: ${error}`);
+      } catch (error: any) {
+        processingErrors.set(video.aweme_id, `原始文案请求失败: ${error.message}`);
       }
       
-      // 每个请求之间稍微延迟，避免API限制
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // 请求间隔
+      if (i < updatedVideotexts.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
     }
     
-    // 如果所有视频都有文案，结束轮询
-    if (allHaveText) {
-      setPreviewInfo(prev => prev + '\n所有视频文案已获取完成');
-      break;
+    // 阶段2: 获取原始文案
+    setPreviewInfo(prev => prev + '\n开始获取原始文案结果...');
+    
+    // 需要轮询的视频
+    let pendingOriVideos = updatedVideotexts.filter(v => 
+      v.asr_task_id && !v.video_text_ori && !v.already_has_text
+    );
+    
+    if (pendingOriVideos.length > 0) {
+      setPreviewInfo(prev => prev + `\n需要轮询原始文案的视频数量: ${pendingOriVideos.length}`);
+      
+      // 轮询获取原始文案
+      let oriPollingAttempts = 0;
+      
+      while (pendingOriVideos.length > 0 && oriPollingAttempts < MAX_POLLING_ATTEMPTS) {
+        oriPollingAttempts++;
+        setButtonText(`原始文案轮询 ${oriPollingAttempts}/${MAX_POLLING_ATTEMPTS}...`);
+        
+        // 记录本轮完成的视频ID，用于从pendingOriVideos中移除
+        const completedThisRound: string[] = [];
+        
+        for (const video of pendingOriVideos) {
+          try {
+            const response = await UpdateVideoTextOriGet(
+              username,
+              password,
+              {
+                aweme_id: video.aweme_id,
+                asr_task_id: video.asr_task_id
+              },
+              setPreviewInfo
+            );
+            
+            // 如果获取到文案
+            if (response.videotext?.video_text_ori) {
+              // 更新视频对象
+              const videoIndex = updatedVideotexts.findIndex(v => v.aweme_id === video.aweme_id);
+              if (videoIndex !== -1) {
+                updatedVideotexts[videoIndex].video_text_ori = response.videotext.video_text_ori;
+              }
+              completedThisRound.push(video.aweme_id);
+              processingErrors.delete(video.aweme_id); // 移除可能存在的错误记录
+            }
+            // 处理中状态不做特殊处理，继续下一轮轮询
+          } catch (error: any) {
+            processingErrors.set(video.aweme_id, `获取原始文案失败: ${error.message}`);
+            completedThisRound.push(video.aweme_id); // 错误也从队列中移除，不再重试
+          }
+        }
+        
+        // 更新待处理列表
+        pendingOriVideos = pendingOriVideos.filter(v => !completedThisRound.includes(v.aweme_id));
+        
+        // 如果还有未完成的，等待后继续
+        if (pendingOriVideos.length > 0 && oriPollingAttempts < MAX_POLLING_ATTEMPTS) {
+          setPreviewInfo(prev => prev + `\n等待${POLLING_INTERVAL/1000}秒后继续轮询原始文案...`);
+          await new Promise(resolve => setTimeout(resolve, POLLING_INTERVAL));
+        }
+      }
+      
+      // 检查是否达到最大轮询次数仍有未完成的
+      if (pendingOriVideos.length > 0) {
+        for (const video of pendingOriVideos) {
+          processingErrors.set(video.aweme_id, `获取原始文案超时，请稍后查看`);
+        }
+      }
     }
     
-    // 如果还有视频没有文案，等待2秒后继续轮询
-    if (pollingCount < maxPollingCount) {
-      setPreviewInfo(prev => prev + `\n等待2秒后进行下一轮获取...`);
-      await new Promise(resolve => setTimeout(resolve, 2000));
+    // 阶段3: 发送整理文案请求
+    setPreviewInfo(prev => prev + '\n开始发送整理文案请求...');
+    setButtonText(`整理文案请求中...`);
+    
+    // 需要发送整理请求的视频
+    const needArrProcess = updatedVideotexts.filter(v => 
+      (v.video_text_ori || v.already_has_text) && !v.llm_task_id_list
+    );
+    
+    if (needArrProcess.length > 0) {
+      setPreviewInfo(prev => prev + `\n需要整理文案的视频数量: ${needArrProcess.length}`);
+      
+      for (let i = 0; i < needArrProcess.length; i++) {
+        const video = needArrProcess[i];
+        setButtonText(`整理文案请求 ${i+1}/${needArrProcess.length}...`);
+        
+        try {
+          const response = await UpdateVideoTextArrPost(
+            username,
+            password,
+            { aweme_id: video.aweme_id },
+            setPreviewInfo
+          );
+          
+          if (response.videotext?.llm_task_id_list) {
+            // 更新视频对象
+            const videoIndex = updatedVideotexts.findIndex(v => v.aweme_id === video.aweme_id);
+            if (videoIndex !== -1) {
+              updatedVideotexts[videoIndex].llm_task_id_list = response.videotext.llm_task_id_list;
+            }
+          } else {
+            processingErrors.set(video.aweme_id, `未获取到整理文案任务ID: ${response.message}`);
+          }
+        } catch (error: any) {
+          processingErrors.set(video.aweme_id, `整理文案请求失败: ${error.message}`);
+        }
+        
+        // 请求间隔
+        if (i < needArrProcess.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+      }
+      
+      // 阶段4: 获取整理文案
+      setPreviewInfo(prev => prev + '\n开始获取整理文案结果...');
+      
+      // 需要轮询的视频
+      let pendingArrVideos = updatedVideotexts.filter(v => 
+        v.llm_task_id_list && !v.video_text_arr
+      );
+      
+      if (pendingArrVideos.length > 0) {
+        setPreviewInfo(prev => prev + `\n需要轮询整理文案的视频数量: ${pendingArrVideos.length}`);
+        
+        // 轮询获取整理文案
+        let arrPollingAttempts = 0;
+        
+        while (pendingArrVideos.length > 0 && arrPollingAttempts < MAX_POLLING_ATTEMPTS) {
+          arrPollingAttempts++;
+          setButtonText(`整理文案轮询 ${arrPollingAttempts}/${MAX_POLLING_ATTEMPTS}...`);
+          
+          // 记录本轮完成的视频ID
+          const completedThisRound: string[] = [];
+          
+          for (const video of pendingArrVideos) {
+            try {
+              const response = await UpdateVideoTextArrGet(
+                username,
+                password,
+                {
+                  aweme_id: video.aweme_id,
+                  llm_task_id_list: video.llm_task_id_list
+                },
+                setPreviewInfo
+              );
+              
+              // 如果获取到文案
+              if (response.videotext?.video_text_arr) {
+                // 更新视频对象
+                const videoIndex = updatedVideotexts.findIndex(v => v.aweme_id === video.aweme_id);
+                if (videoIndex !== -1) {
+                  updatedVideotexts[videoIndex].video_text_arr = response.videotext.video_text_arr;
+                }
+                completedThisRound.push(video.aweme_id);
+                processingErrors.delete(video.aweme_id); // 移除可能存在的错误记录
+                successfulVideos.add(video.aweme_id); // 标记为完全成功
+              }
+              // 处理中状态不做特殊处理，继续下一轮轮询
+            } catch (error: any) {
+              processingErrors.set(video.aweme_id, `获取整理文案失败: ${error.message}`);
+              completedThisRound.push(video.aweme_id); // 错误也从队列中移除，不再重试
+            }
+          }
+          
+          // 更新待处理列表
+          pendingArrVideos = pendingArrVideos.filter(v => !completedThisRound.includes(v.aweme_id));
+          
+          // 如果还有未完成的，等待后继续
+          if (pendingArrVideos.length > 0 && arrPollingAttempts < MAX_POLLING_ATTEMPTS) {
+            setPreviewInfo(prev => prev + `\n等待${POLLING_INTERVAL/1000}秒后继续轮询整理文案...`);
+            await new Promise(resolve => setTimeout(resolve, POLLING_INTERVAL));
+          }
+        }
+        
+        // 检查是否达到最大轮询次数仍有未完成的
+        if (pendingArrVideos.length > 0) {
+          for (const video of pendingArrVideos) {
+            processingErrors.set(video.aweme_id, `获取整理文案超时，请稍后查看`);
+          }
+        }
+      }
     }
+    
+    // 最终统计处理结果
+    const successCount = updatedVideotexts.filter(v => v.video_text_ori || v.video_text_arr).length;
+    const errorCount = processingErrors.size;
+    const totalCount = updatedVideotexts.length;
+    
+    let resultMessage = `处理完成: ${successCount}/${totalCount} 个成功`;
+    if (errorCount > 0) {
+      resultMessage += `，${errorCount} 个失败`;
+      setPreviewInfo(prev => prev + `\n${resultMessage}。失败详情: ${JSON.stringify(Object.fromEntries(processingErrors))}`);
+    } else {
+      setPreviewInfo(prev => prev + `\n${resultMessage}`);
+    }
+    
+    setButtonText(resultMessage);
+    
+    return updatedVideotexts;
+  } catch (error: any) {
+    setPreviewInfo(prev => prev + `\n整体处理出错: ${error.message}`);
+    throw error;
   }
-  
-  // 检查是否达到最大轮询次数
-  if (pollingCount >= maxPollingCount) {
-    setPreviewInfo(prev => prev + `\n达到最大轮询次数(${maxPollingCount})，部分视频可能未获取到文案`);
-  }
-  
-  return updatedVideotexts;
 };
