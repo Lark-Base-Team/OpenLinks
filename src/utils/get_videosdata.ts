@@ -1,311 +1,556 @@
-import { bitable, FieldType } from '@lark-base-open/js-sdk';
+import { bitable, FieldType, ITable, IRecord, IFieldMeta } from '@lark-base-open/js-sdk';
 import axios from 'axios';
 
 // 定义后端 API 的基础 URL
 const API_BASE_URL = 'https://www.ccai.fun';
 
-// 定义视频数据的接口
+// 定义从后端 API 返回的视频数据的接口结构
 interface Video {
-  nickname: string;
-  aweme_id: string;
-  share_url: string;
-  conv_create_time: string;
-  desc: string;
-  digg_count: string;
-  collect_count: string;
-  comment_count: string;
-  duration: string;
-  play_addr: string;
-  audio_addr: string;
-  share_count: string;
+  nickname: string;         // 视频作者昵称
+  aweme_id: string;         // 视频的唯一标识符 (视频编号)
+  share_url: string;        // 视频分享链接
+  conv_create_time: string; // 视频发布时间 (可能是多种格式: YYYYMMDD, 时间戳秒/毫秒, 标准日期字符串)
+  desc: string;             // 视频描述/标题
+  digg_count: string;       // 点赞数 (字符串形式)
+  collect_count: string;    // 收藏数 (字符串形式)
+  comment_count: string;    // 评论数 (字符串形式)
+  duration: string;         // 视频时长 (秒, 字符串形式)
+  play_addr: string;        // 视频播放/下载地址
+  audio_addr: string;       // 音频播放/下载地址
+  share_count: string;      // 分享数 (字符串形式)
+}
+
+// 定义前端数据模型到飞书表格字段的映射关系
+// key: 后端返回的 Video 接口中的字段名
+// value: { name: 飞书表格中的字段名, type: 飞书表格中的字段类型 }
+const fieldMapping: { [key: string]: { name: string; type: FieldType } } = {
+  nickname: { name: '昵称', type: FieldType.Text },
+  aweme_id: { name: '视频编号', type: FieldType.Text }, // 这个字段用于去重
+  share_url: { name: '分享链接', type: FieldType.Url },
+  conv_create_time: { name: '发布日期', type: FieldType.DateTime },
+  desc: { name: '描述', type: FieldType.Text },
+  digg_count: { name: '点赞数', type: FieldType.Number },
+  collect_count: { name: '收藏数', type: FieldType.Number },
+  comment_count: { name: '评论数', type: FieldType.Number },
+  duration: { name: '时长', type: FieldType.Number }, // 单位：秒
+  play_addr: { name: '下载链接', type: FieldType.Url },
+  audio_addr: { name: '音频链接', type: FieldType.Url },
+  share_count: { name: '分享数', type: FieldType.Number },
+  video_text_arr: { name: '文案', type: FieldType.Text }, // 添加文案字段
+};
+
+/**
+ * 获取或创建指定名称的表格。
+ * 如果表格已存在，则返回该表格对象。
+ * 如果表格不存在，则创建新表格，并将主字段（通常是第一列）尝试重命名为 "视频编号"。
+ * @param tableName 要获取或创建的表格名称 (通常是视频作者的昵称)。
+ * @param logger 日志记录函数。
+ * @returns 返回 Promise，解析为飞书表格对象 ITable。
+ * @throws 如果无法获取或创建表格实例，则抛出错误。
+ */
+async function getOrCreateTable(tableName: string, logger: (message: string) => void): Promise<ITable> {
+  // 获取 bitable base 对象
+  const base = bitable.base;
+  // 获取当前 base 下的所有表格元数据列表
+  const tables = await base.getTableMetaList();
+  // 查找是否存在名称匹配的表格
+  let tableMeta = tables.find(t => t.name === tableName);
+  let table: ITable;
+  let isNewTable = false; // 标记是否是新创建的表格
+
+  // 如果找不到同名表格
+  if (!tableMeta) {
+    logger(`表格 "${tableName}" 不存在，正在创建...`);
+    try {
+      // 调用 SDK 创建新表格，只指定名称，字段稍后处理
+      const { tableId } = await base.addTable({ name: tableName, fields: [] });
+      // 根据返回的 tableId 获取新创建的表格对象
+      table = await base.getTableById(tableId);
+      isNewTable = true; // 标记为新表
+      logger(`表格 "${tableName}" 创建成功，ID: ${tableId}`);
+    } catch (error) {
+      logger(`创建表格 "${tableName}" 失败: ${error}`);
+      throw error; // 抛出错误，中断后续操作
+    }
+  } else {
+    // 如果找到同名表格，根据其 ID 获取表格对象
+    table = await base.getTableById(tableMeta.id);
+    logger(`找到现有表格 "${tableName}"，ID: ${tableMeta.id}`);
+  }
+
+  // 双重检查，确保成功获取到表格对象
+  if (!table) {
+    throw new Error(`无法获取表格 "${tableName}" 的实例`);
+  }
+
+  // --- 新表的主字段重命名逻辑 ---
+  // 如果是新创建的表格
+  if (isNewTable) {
+    try {
+      // 获取新表格默认创建的字段列表
+      const initialFields = await table.getFieldMetaList();
+      // 查找其中的主字段 (isPrimary 属性为 true)
+      const primaryField = initialFields.find(f => f.isPrimary);
+      // 如果找到了主字段
+      if (primaryField) {
+        logger(`新表格 "${tableName}"：找到主字段 "${primaryField.name}" (ID: ${primaryField.id})，尝试重命名为 "视频编号"...`);
+        // 调用 SDK 设置字段属性，只修改名称
+        await table.setField(primaryField.id, { name: '视频编号' });
+        logger(`主字段已重命名为 "视频编号"`);
+      } else {
+        // 一般不太可能发生，但以防万一
+        logger(`警告：新表格 "${tableName}" 未找到主字段，无法自动重命名。`);
+      }
+    } catch (renameError) {
+      // 如果重命名失败，记录错误，但不中断流程
+      logger(`重命名主字段为 "视频编号" 时出错: ${renameError}`);
+    }
+  }
+
+  // 返回获取到或新创建的表格对象
+  return table;
 }
 
 /**
- * 获取视频数据并写入多维表格
- * @param username 用户名
- * @param password 密码
- * @param platform 平台（douyin/tiktok）
- * @param linkType 链接类型（homepage/videourl）
- * @param updateMethod 更新方式（extract/update）
- * @param pageCount 翻页数
- * @param url 输入的链接
- * @param setPreviewInfo 更新预览信息的函数
- * @returns 处理结果
+ * 确保表格中存在 fieldMapping 中定义的所有必需字段。
+ * 如果字段不存在，则尝试创建它（除了 "视频编号" 字段，因为它由 getOrCreateTable 处理）。
+ * @param table 要检查和操作的飞书表格对象 ITable。
+ * @param logger 日志记录函数。
+ * @returns 返回 Promise，解析为一个对象，其键是字段名，值是对应的字段 ID。
  */
-export const getVideosData = async (
+async function ensureFieldsExist(table: ITable, logger: (message: string) => void): Promise<{ [key: string]: string }> {
+  // 获取表格当前所有字段的元数据列表
+  const fieldsMeta = await table.getFieldMetaList();
+  // 创建一个包含现有字段名的 Set，方便快速查找
+  const existingFieldNames = new Set(fieldsMeta.map(f => f.name));
+  // 初始化字段名到字段 ID 的映射对象
+  const fieldMap: { [key: string]: string } = {};
+
+  fieldsMeta.forEach(field => {
+    fieldMap[field.name] = field.id;
+  });
+
+  logger(`开始检查表格 "${await table.getName()}" 的字段...`);
+
+  // 遍历 fieldMapping 中定义的期望字段
+  for (const key in fieldMapping) {
+    const fieldInfo = fieldMapping[key]; // 获取期望字段的信息 { name, type }
+    const targetFieldName = fieldInfo.name; // 期望的字段名
+
+    // --- 检查并创建缺失字段的逻辑 ---
+    // 检查条件：
+    // 1. 现有字段名 Set 中不包含此字段名
+    // 2. 并且此字段名不是 "视频编号" (因为 "视频编号" 要么是重命名的主字段，要么已存在)
+    if (!existingFieldNames.has(targetFieldName) && targetFieldName !== '视频编号') {
+      try {
+        logger(`字段 "${targetFieldName}" 不存在，正在创建...`);
+        // 调用 SDK 添加字段，指定类型和名称
+        const newField = await table.addField({
+          type: fieldInfo.type as any, // 使用 as any 避免 FieldType 联合类型过于严格的问题
+          name: targetFieldName,
+        });
+        // 检查 addField 的返回值是否包含 id (SDK 版本差异可能导致返回值不同)
+        if (newField && typeof newField === 'object' && 'id' in newField) {
+            const fieldWithId = newField as { id: string }; // 类型断言
+            logger(`字段 "${targetFieldName}" 创建成功，ID: ${fieldWithId.id}`);
+            fieldMap[targetFieldName] = fieldWithId.id; // 将新字段加入映射
+        } else {
+             // 如果返回值没有 id，记录日志并尝试重新获取字段列表来更新映射
+             logger(`字段 "${targetFieldName}" 创建成功，但无法从返回值获取 ID。返回结构: ${JSON.stringify(newField)}`);
+             const updatedFieldsMeta = await table.getFieldMetaList();
+             updatedFieldsMeta.forEach(field => { fieldMap[field.name] = field.id; });
+        }
+      } catch (error) {
+        // 创建字段失败，记录错误，后续写入会跳过此字段
+        logger(`创建字段 "${targetFieldName}" 失败: ${error}`);
+      }
+    }
+    // 如果字段已存在
+    else if (existingFieldNames.has(targetFieldName)) {
+        logger(`字段 "${targetFieldName}" 已存在.`);
+        // 确保现有字段的 ID 在 fieldMap 中 (通常在初始填充时已加入)
+        if (!fieldMap[targetFieldName]) {
+            const existingField = fieldsMeta.find(f => f.name === targetFieldName);
+            if (existingField) {
+                fieldMap[targetFieldName] = existingField.id;
+            }
+        }
+    }
+    // 如果是 "视频编号" 字段
+    else if (targetFieldName === '视频编号') {
+        logger(`字段 "${targetFieldName}" 由主字段重命名处理或已存在。`);
+        // 确保 "视频编号" 的 ID 在 fieldMap 中
+        if (!fieldMap[targetFieldName]) {
+            // 尝试在字段列表中查找名为 "视频编号" 的字段
+            const videoIdField = fieldsMeta.find(f => f.name === targetFieldName);
+            if (videoIdField) {
+                fieldMap[targetFieldName] = videoIdField.id;
+            } else {
+                 // 如果找不到，说明重命名可能失败或表格结构异常
+                 logger(`警告：无法在最终字段列表中找到 "视频编号" 字段的 ID。`);
+            }
+        }
+    }
+  }
+  logger('字段检查完成.');
+
+  // --- 最终检查 fieldMap 是否完整 ---
+  for (const key in fieldMapping) {
+      // 检查 fieldMapping 中定义的每个字段名，是否都在最终的 fieldMap 中找到了对应的 ID
+      if (!fieldMap[fieldMapping[key].name]) {
+          logger(`警告：最终字段映射中缺少字段 "${fieldMapping[key].name}" 的 ID。后续写入将跳过此字段。`);
+      }
+  }
+  // 返回最终的字段名 -> 字段 ID 映射
+  return fieldMap;
+}
+
+/**
+ * 主函数：从后端 API 获取视频数据，并将其写入指定的飞书多维表格。
+ * 会根据视频作者昵称自动选择或创建表格。
+ * 会检查视频编号是否已存在，避免重复添加。
+ * @param username 用户名 (用于 API 认证)。
+ * @param passtoken 认证令牌/密码 (用于 API 认证)。
+ * @param platform 视频平台 ('douyin' 或 'tiktok')。
+ * @param linkType 链接类型 ('homepage' 或 'videourl')。
+ * @param updateMethod 更新方式 ('extract' 或 'update')。
+ * @param pageCount 翻页数 (用于获取主页链接时)。
+ * @param url 用户输入的 URL (可能包含多个，用换行符分隔)。
+ * @param logger 日志记录函数。
+ */
+export async function getVideosData(
   username: string,
-  password: string,
+  passtoken: string,
   platform: string,
   linkType: string,
   updateMethod: string,
   pageCount: number,
   url: string,
-  setPreviewInfo: (value: React.SetStateAction<string>) => void
-) => {
-  // 使用完整的请求 URL
-  const endpoint = '/api/video/doutikhub'; // 修改为与LinktoText一致的API路径
-  const requestUrl = `${API_BASE_URL}${endpoint}`;
+  logger: (message: string) => void
+) {
+  logger('开始获取视频数据...');
 
-  // 构建数据结构，与LinktoText保持一致
-  const data = {
+  // --- 输入参数校验 ---
+  if (!username || !passtoken) {
+    logger('错误：用户名和密码不能为空');
+    return; // 中断执行
+  }
+  if (!url) {
+    logger('错误：URL 不能为空');
+    return; // 中断执行
+  }
+
+  // --- URL 处理 ---
+  // 将输入的多行 URL 字符串分割成数组，去除首尾空格并过滤掉空行
+  const urls = url.split('\n').map(line => line.trim()).filter(line => line);
+  if (urls.length === 0) {
+    logger('错误：未提供有效的 URL');
+    return; // 中断执行
+  }
+
+  logger(`准备处理 ${urls.length} 个链接...`);
+
+  // --- 循环处理每个 URL ---
+  for (const singleUrl of urls) {
+    logger(`\n处理链接: ${singleUrl}`);
+    try {
+      // --- 构造 API 请求数据 ---
+      const requestData = {
     username: username,
-    password: password,
+        passtoken: passtoken,
     platform: platform,
-    url_type: linkType,
-    url_process_type: updateMethod,
-    raw_url_inputs: url,
-    raw_url_input: null,
-    page_turns: pageCount
-  };
+        url_type: linkType,         // 使用后端期望的字段名
+        url_process_type: updateMethod, // 使用后端期望的字段名
+        page_turns: pageCount,       // 使用后端期望的字段名
+        raw_url_inputs: singleUrl,   // 使用后端期望的字段名
+      };
 
-  try {
-    // 显示请求信息
-    setPreviewInfo(`发送请求到: ${requestUrl}\n请求数据:\n${JSON.stringify(data, null, 2)}`);
+      logger(`发送请求到 ${API_BASE_URL}/api/video/doutikhub`);
+      logger(`请求数据: ${JSON.stringify(requestData, null, 2)}`);
 
-    setPreviewInfo(prev => prev + '\n开始发送请求...');
-    // 发送POST请求
-    const response = await axios.post(requestUrl, data); // 使用完整的 URL
+      // --- 发送 API 请求 ---
+      const response = await axios.post(`${API_BASE_URL}/api/video/doutikhub`, requestData);
 
-    setPreviewInfo(prev => prev + '\n开始解析响应数据...');
-    // 解析响应数据
-    const responseData = response.data;
+      logger(`收到响应: ${JSON.stringify(response.data, null, 2)}`);
 
-    // 更新预览信息，添加响应数据
-    setPreviewInfo(prev => prev + `\n\n收到响应:\n${JSON.stringify(responseData, null, 2)}`);
+      // --- 处理 API 响应 ---
+      // 检查响应数据结构是否符合预期
+      if (response.data && response.data.videos) {
+        const videos: Video[] = response.data.videos; // 获取视频数据数组
+        logger(`成功获取 ${videos.length} 条视频数据`);
 
-    // 处理返回数据并写入工作表
-    if (!responseData.videos) {
-      throw new Error('响应数据中缺少videos字段');
-    }
-    if (!Array.isArray(responseData.videos)) {
-      throw new Error('videos字段不是数组类型');
-    }
-    if (responseData.message === "处理成功" && responseData.videos.length > 0) {
-      try {
-        const base = bitable.base;
-        const tables = await base.getTableMetaList();
+        // 如果 API 返回了视频数据
+        if (videos.length > 0) {
+          // --- 确定目标表格 ---
+          // 使用第一个视频的昵称作为表格名称，如果昵称为空则使用默认名称
+          const tableName = videos[0].nickname || '未命名视频集';
+          logger(`准备将数据写入表格: "${tableName}"`);
 
-        // 按昵称分组处理视频数据
-        const videosByNickname: Record<string, Video[]> = {};
-        for (const video of responseData.videos) {
-          if (!videosByNickname[video.nickname]) {
-            videosByNickname[video.nickname] = [];
-          }
-          videosByNickname[video.nickname].push(video);
-        }
-        
+          // --- 获取或创建表格实例 ---
+          const table = await getOrCreateTable(tableName, logger);
 
-        // 处理每个昵称的视频数据
-        for (const [nickname, videos] of Object.entries(videosByNickname)) {
-          setPreviewInfo(prev => prev + `\n开始处理用户 "${nickname}" 的数据...`);
-          // 检查是否存在对应昵称的表
-          let table = tables.find(t => t.name === nickname) as any;
-          let tableId;
+          // --- 确保字段存在并获取字段映射 ---
+          const fieldMap = await ensureFieldsExist(table, logger);
 
-          if (!table) {
-            setPreviewInfo(prev => prev + `\n创建新表格 "${nickname}"...`);
-            try {
-              // 创建新表
-              const { tableId: newTableId } = await base.addTable({
-                name: nickname,
-                fields: []
-              });
-              tableId = newTableId;
-              
-              setPreviewInfo(prev => prev + '\n表格创建成功，获取表格实例...');
-              
-              table = await base.getTableById(tableId);
-              if (!table) {
-                throw new Error('无法获取新创建的表格实例');
-              }
-              
-              // 获取默认创建的字段列表
-              const initialFields = await table.getFieldMetaList();
-              // 找到第一个字段（通常是系统创建的索引列）
-              const primaryField = initialFields[0];
-              
-              if (primaryField) {
-                // 将默认索引列重命名为"视频编号"
-                setPreviewInfo(prev => prev + '\n将默认索引列重命名为"视频编号"...');
-                await table.setField(primaryField.id, {
-                  name: '视频编号'
-                });
-              }
-              
-              setPreviewInfo(prev => prev + '\n开始创建其他字段...');
-              // 定义要创建的其他字段（不包括"视频编号"）
-              const fields = [
-                { type: FieldType.Text, name: '昵称' },
-                { type: FieldType.Text, name: '链接' },
-                { type: FieldType.Text, name: '发布日期' },
-                { type: FieldType.Text, name: '描述' },
-                { type: FieldType.Number, name: '点赞数' },
-                { type: FieldType.Number, name: '收藏数' },
-                { type: FieldType.Number, name: '评论数' },
-                { type: FieldType.Number, name: '分享数' },
-                { type: FieldType.Number, name: '时长' },
-                { type: FieldType.Text, name: '下载链接' },
-                { type: FieldType.Text, name: '音频链接' },
-                { type: FieldType.Text, name: '文案' }
-              ];
-              
-              // 逐个创建字段
-              for (const field of fields) {
-                try {
-                  setPreviewInfo(prev => prev + `\n正在创建字段: ${field.name}...`);
-                  await table.addField({
-                    type: field.type,
-                    name: field.name
-                  });
-                } catch (fieldError: any) {
-                  setPreviewInfo(prev => prev + `\n创建字段 ${field.name} 失败: ${fieldError.message}`);
-                  throw new Error(`创建字段 ${field.name} 失败: ${fieldError.message}`);
-                }
-              }
-              
-              setPreviewInfo(prev => prev + '\n所有字段创建完成');
-            } catch (error: any) {
-              setPreviewInfo(prev => prev + `\n创建表格或字段时出错: ${error.message}`);
-              throw error;
-            }
-          } else {
-            tableId = table.id;
-            table = await base.getTableById(tableId);
-          }
+          // --- **核心去重逻辑：获取现有视频编号** ---
+          const videoIdFieldName = fieldMapping['aweme_id'].name; // 获取 "视频编号" 字段的名称
+          const videoIdFieldId = fieldMap[videoIdFieldName]; // 从映射中获取 "视频编号" 字段的 ID
+          let existingVideoIds = new Map<string, string>(); // 创建 Map 存储现有视频编号 (key: 清理后的视频ID, value: 记录ID)
 
-          if (!table) {
-            throw new Error('无法获取表格实例');
-          }
+          // 检查是否成功获取到 "视频编号" 字段的 ID
+          if (videoIdFieldId) {
+             logger(`正在获取表格 "${tableName}" 中现有的视频编号 (字段ID: ${videoIdFieldId})...`);
+             try {
+                // --- 修改：使用 getRecords 分页获取所有记录 ---
+                let allRecords: IRecord[] = []; // 用于存储所有获取到的记录
+                let pageToken: string | undefined = undefined; // 分页标记
+                let hasMore = true;
+                let totalFetched = 0;
 
-          setPreviewInfo(prev => prev + '\n获取字段元数据...');
-          // 获取现有记录的视频编号
-          const fields = await table.getFieldMetaList();
-          const fieldMap: Record<string, string> = {};
-          fields.forEach((field: any) => {
-            fieldMap[field.name] = field.id;
-          });
+                logger('开始分页获取所有记录...');
+                while (hasMore) {
+                  try {
+                    // 调用 getRecords 获取一个批次的记录
+                    const response = await table.getRecords({
+                      pageSize: 5000, // 每次最多获取 5000 条
+                      pageToken: pageToken,
+                    });
 
-          // 检查字段映射是否正确
-          setPreviewInfo(prev => prev + '\n检查字段映射...');
-          for (const fieldName of ['视频编号', '昵称', '链接', '发布日期', '描述', '点赞数', '收藏数', '评论数', '时长', '下载链接', '音频链接', '文案', '分享数']) {
-            if (!fieldMap[fieldName]) {
-              setPreviewInfo(prev => prev + `\n警告: 未找到字段 "${fieldName}" 的映射`);
-            }
-          }
+                    // 将当前批次的记录添加到总列表中
+                    if (response.records) {
+                      allRecords = allRecords.concat(response.records);
+                      totalFetched += response.records.length;
+                      logger(`已获取 ${totalFetched}/${response.total} 条记录...`);
+                    } else {
+                      logger('警告：getRecords 返回的批次中没有 records 数组');
+                    }
 
-          setPreviewInfo(prev => prev + '\n获取视频编号列数据...');
-          let existingVideoIds = new Set();
-          try {
-            // 使用 getRecords 方法获取所有记录，但只关注视频编号字段
-            const videoIdFieldId = fieldMap['视频编号'];
-            if (videoIdFieldId) {
-              // 使用getCellString方法获取单元格的文本表示
-              const recordIdList = await table.getRecordIdList();
-              existingVideoIds = new Set();
+                    // 更新分页标记和状态
+                    hasMore = response.hasMore;
+                    pageToken = response.pageToken;
 
-              for (const recordId of recordIdList) {
-                try {
-                  const videoId = await table.getCellString(videoIdFieldId, recordId);
-                  if (videoId) {
-                    existingVideoIds.add(videoId);
+                  } catch (getRecordsError) {
+                    logger(`分页获取记录时出错: ${getRecordsError}`);
+                    hasMore = false; // 出错时停止获取
                   }
-                } catch (error) {
-                  console.error(`获取记录 ${recordId} 的值失败:`, error);
                 }
-              }
-              
-              setPreviewInfo(prev => prev + `\n现有视频数量: ${existingVideoIds.size}`);
-            } else {
-              setPreviewInfo(prev => prev + '\n警告: 未找到视频编号字段，将添加所有记录');
-            }
-          } catch (recordError: any) {
-            // 如果获取记录失败，假设是因为表格是新的，没有记录
-            setPreviewInfo(prev => prev + `\n获取视频编号数据失败，可能是新表格: ${recordError.message}`);
-          }
+                logger(`所有记录获取完毕，共 ${allRecords.length} 条。`);
+                // --- 结束分页获取 ---
 
-          setPreviewInfo(prev => prev + `\n现有视频编号列表: ${Array.from(existingVideoIds).join(', ')}`);
-
-          // 准备新增记录数据
-          const newRecords = [];
-          for (const video of videos) {
-            if (!existingVideoIds.has(video.aweme_id)) {
-              const record = {
-                fields: {
-                  [fieldMap['视频编号']]: video.aweme_id,
-                  [fieldMap['昵称']]: video.nickname,
-                  [fieldMap['链接']]: video.share_url,
-                  [fieldMap['发布日期']]: video.conv_create_time,
-                  [fieldMap['描述']]: video.desc,
-                  [fieldMap['点赞数']]: parseInt(video.digg_count) || 0,
-                  [fieldMap['收藏数']]: parseInt(video.collect_count) || 0,
-                  [fieldMap['评论数']]: parseInt(video.comment_count) || 0,
-                  [fieldMap['时长']]: parseInt(video.duration) || 0,
-                  [fieldMap['下载链接']]: video.play_addr,
-                  [fieldMap['音频链接']]: video.audio_addr,
-                  [fieldMap['文案']]: '',
-                  [fieldMap['分享数']]: parseInt(video.share_count) || 0
+                logger(`开始遍历 ${allRecords.length} 条现有记录以提取视频编号...`);
+                // 遍历获取到的所有记录 (使用 allRecords 替代之前的 records)
+                for(const record of allRecords){
+                    try {
+                        // 使用 getCellString 获取 "视频编号" 单元格的文本值
+                        const videoIdString = await table.getCellString(videoIdFieldId, record.recordId);
+                        if (videoIdString) {
+                            // 清理视频编号并存入 Map
+                            const cleanVideoId = videoIdString.trim().toLowerCase();
+                            existingVideoIds.set(cleanVideoId, record.recordId);
+                        }
+                    } catch (cellError) {
+                        logger(`获取记录 ${record.recordId} 的视频编号时出错: ${cellError}`);
+                    }
                 }
-              };
-              newRecords.push(record);
-            }
-          }
-
-          setPreviewInfo(prev => prev + `\n准备添加 ${newRecords.length} 条新记录...`);
-          // 批量添加记录
-          if (newRecords.length > 0) {
-            try {
-              setPreviewInfo(prev => prev + '\n开始批量添加记录...');
-              
-              // 修改记录格式部分
-              const formattedRecords = newRecords.map(record => ({
-                fields: {
-                  // 补全所有字段
-                  [fieldMap['视频编号']]: record.fields[fieldMap['视频编号']],
-                  [fieldMap['昵称']]: record.fields[fieldMap['昵称']],
-                  [fieldMap['链接']]: record.fields[fieldMap['链接']],
-                  [fieldMap['发布日期']]: record.fields[fieldMap['发布日期']],
-                  [fieldMap['描述']]: record.fields[fieldMap['描述']],
-                  [fieldMap['点赞数']]: record.fields[fieldMap['点赞数']],
-                  [fieldMap['收藏数']]: record.fields[fieldMap['收藏数']],
-                  [fieldMap['评论数']]: record.fields[fieldMap['评论数']],
-                  [fieldMap['时长']]: record.fields[fieldMap['时长']],
-                  [fieldMap['下载链接']]: record.fields[fieldMap['下载链接']],
-                  [fieldMap['音频链接']]: record.fields[fieldMap['音频链接']],
-                  [fieldMap['文案']]: record.fields[fieldMap['文案']],
-                  [fieldMap['分享数']]: record.fields[fieldMap['分享数']]
-                }
-              }));
-              
-              // 使用正确的批量添加记录方法
-              for (let i = 0; i < formattedRecords.length; i += 10) {
-                const batch = formattedRecords.slice(i, i + 10);
-                await table.addRecords(batch);
-                setPreviewInfo(prev => prev + `\n成功添加第 ${i+1} 到 ${Math.min(i+10, formattedRecords.length)} 条记录`);
-              }
-              
-              setPreviewInfo(prev => prev + `\n成功添加 ${formattedRecords.length} 条记录到表格 "${nickname}"`);
-            } catch (error: any) {
-              setPreviewInfo(prev => prev + `\n添加记录失败: ${error.message}\n错误详情: ${JSON.stringify(error, null, 2)}`);
-              throw error;
+                logger(`成功获取并处理了 ${existingVideoIds.size} 个现有视频编号`);
+             } catch (e) {
+                // 这个 catch 现在主要捕获分页逻辑之外的错误
+                logger(`处理现有视频编号时发生意外错误: ${e}`);
             }
           } else {
-            setPreviewInfo(prev => prev + `\n表格 "${nickname}" 中没有新的记录需要添加`);
+             logger(`警告：无法找到 "${videoIdFieldName}" 字段的 ID，将添加所有记录为新记录。`);
           }
+
+          // --- 准备待添加和待更新的记录数据 ---
+          const recordsToAdd: { fields: { [key: string]: any } }[] = [];
+          const recordsToUpdate: { recordId: string; fields: { [key: string]: any } }[] = [];
+
+          // 遍历从 API 获取的视频数据
+          for (const video of videos) {
+            // logger(`完整原始视频数据: ${JSON.stringify(video)}`); // 可选调试日志
+
+            const fields: { [key: string]: any } = {}; // 用于存储单条记录的字段数据 { fieldId: value }
+            let hasRequiredId = false; // 标记当前视频是否有有效的 "视频编号"
+
+            // --- 映射 "视频编号" 字段 ---
+            if (fieldMap['视频编号']) {
+                // 将 aweme_id 转换为字符串，并赋值给 "视频编号" 字段
+                fields[fieldMap['视频编号']] = String(video.aweme_id);
+                hasRequiredId = true; // 标记成功获取到必需的 ID
+            } else {
+                // 如果 "视频编号" 字段映射不存在，则无法处理此视频
+                logger(`警告：缺少 "视频编号" 字段映射，无法处理视频 ${video.aweme_id}`);
+                continue; // 跳过当前视频，处理下一个
+            }
+
+            // --- 映射其他字段 ---
+            // 对每个字段，先检查 fieldMap 中是否存在对应的字段 ID
+            // 如果存在，则从 video 对象中取值，进行必要的类型转换，然后赋值
+            if (fieldMap['昵称']) fields[fieldMap['昵称']] = String(video.nickname || '');
+            if (fieldMap['分享链接']) fields[fieldMap['分享链接']] = String(video.share_url || '');
+            if (fieldMap['发布日期']) {
+                // 调用前面定义的日期处理逻辑
+                try {
+                    const rawValue = video.conv_create_time;
+                    let timestamp: number | null = null;
+
+                    if (typeof rawValue === 'string') {
+                        // 优先检查 YYYYMMDD 格式 (8位数字)
+                        if (/^\d{8}$/.test(rawValue)) {
+                            const year = parseInt(rawValue.substring(0, 4), 10);
+                            const month = parseInt(rawValue.substring(4, 6), 10) - 1; // 月份从0开始
+                            const day = parseInt(rawValue.substring(6, 8), 10);
+                            const date = new Date(Date.UTC(year, month, day)); // 使用 UTC 避免时区问题
+                            if (!isNaN(date.getTime()) && date.getUTCFullYear() === year && date.getUTCMonth() === month && date.getUTCDate() === day) {
+                                timestamp = date.getTime();
+                            } else {
+                                logger(`警告：视频 ${video.aweme_id} 的发布日期 YYYYMMDD "${rawValue}" 无法解析为有效日期`);
+                            }
+                        }
+                        // 再检查标准日期格式字符串
+                        else if (rawValue.match(/^\d{4}[-/]\d{1,2}[-/]\d{1,2}/)) {
+                            const date = new Date(rawValue);
+                            if (!isNaN(date.getTime())) {
+                                timestamp = date.getTime();
+                                logger(`视频 ${video.aweme_id} 的发布日期 "${rawValue}" 解析为 ${new Date(timestamp).toISOString()}`);
+                            } else {
+                                logger(`警告：视频 ${video.aweme_id} 的发布日期 "${rawValue}" 无法解析为有效日期`);
+                            }
+                        }
+                        // 最后检查是否是时间戳字符串
+                        else if (/^\d+$/.test(rawValue)) {
+                            const numValue = parseInt(rawValue, 10);
+                            const ts = rawValue.length <= 10 ? numValue * 1000 : numValue;
+                            const year = new Date(ts).getFullYear();
+                            if (year >= 2010 && year <= 2030) {
+                                timestamp = ts;
+                                logger(`视频 ${video.aweme_id} 的发布日期时间戳 "${rawValue}" 解析为 ${new Date(timestamp).toISOString()}`);
+                            } else {
+                                logger(`警告：视频 ${video.aweme_id} 的发布日期时间戳 "${rawValue}" 解析为 ${new Date(ts).toISOString()}，年份 ${year} 超出合理范围`);
+                            }
+                        } else {
+                            logger(`警告：视频 ${video.aweme_id} 的发布日期字符串 "${rawValue}" 格式不支持`);
+                        }
+                    }
+                    // 处理数字类型时间戳
+                    else if (typeof rawValue === 'number') {
+                        const ts = rawValue < 10000000000 ? rawValue * 1000 : rawValue;
+                        const year = new Date(ts).getFullYear();
+                        if (year >= 2010 && year <= 2030) {
+                            timestamp = ts;
+                            logger(`视频 ${video.aweme_id} 的发布日期数字 ${rawValue} 解析为 ${new Date(timestamp).toISOString()}`);
+                        } else {
+                            logger(`警告：视频 ${video.aweme_id} 的发布日期数字 ${rawValue} 解析为 ${new Date(ts).toISOString()}，年份 ${year} 超出合理范围`);
+                        }
+                    } else {
+                        logger(`警告：视频 ${video.aweme_id} 的发布日期 "${rawValue}" (${typeof rawValue}) 格式不支持`);
+                    }
+
+                    // 如果成功解析出时间戳，则赋值给 "发布日期" 字段
+                    if (timestamp !== null) {
+                        fields[fieldMap['发布日期']] = timestamp;
+                    }
+
+                } catch (dateError) {
+                    logger(`警告：处理视频 ${video.aweme_id} 的发布日期时出错: ${dateError}`);
+                }
+            }
+            if (fieldMap['描述']) fields[fieldMap['描述']] = String(video.desc || '');
+            // 对于数字类型，先转字符串再 parseInt，并提供默认值 0，防止 NaN
+            if (fieldMap['点赞数']) fields[fieldMap['点赞数']] = parseInt(String(video.digg_count)) || 0;
+            if (fieldMap['收藏数']) fields[fieldMap['收藏数']] = parseInt(String(video.collect_count)) || 0;
+            if (fieldMap['评论数']) fields[fieldMap['评论数']] = parseInt(String(video.comment_count)) || 0;
+            if (fieldMap['时长']) fields[fieldMap['时长']] = Math.round(parseInt(String(video.duration)) / 1000) || 0; // 毫秒转秒
+            if (fieldMap['下载链接']) fields[fieldMap['下载链接']] = String(video.play_addr || '');
+            if (fieldMap['音频链接']) fields[fieldMap['音频链接']] = String(video.audio_addr || '');
+            if (fieldMap['分享数']) fields[fieldMap['分享数']] = parseInt(String(video.share_count)) || 0;
+
+            // --- **核心去重逻辑：检查视频编号是否存在** ---
+            // 只有在成功获取到视频编号的情况下才进行检查
+            if (hasRequiredId) {
+                // **关键步骤：清理当前视频的 aweme_id**
+                // 同样进行 trim() 和 toLowerCase() 处理，以匹配 Map 中的 key
+                const videoId = String(video.aweme_id).trim().toLowerCase();
+                // 在 existingVideoIds Map 中查找清理后的 videoId
+                const existingRecordId = existingVideoIds.get(videoId);
+
+                // 如果找到了 existingRecordId，说明记录已存在
+                if (existingRecordId) {
+                    // logger(`视频 ${videoId} 已存在，准备更新 Record ID: ${existingRecordId}`); // 可选调试日志
+                    // 将记录添加到待更新列表，包含记录 ID 和新的字段数据
+                    recordsToUpdate.push({ recordId: existingRecordId, fields });
+                }
+                // 如果没有找到 existingRecordId，说明是新记录
+                else {
+                    // logger(`视频 ${videoId} 不存在，准备新增`); // 可选调试日志
+                    // 将记录添加到待新增列表，只包含字段数据
+                    recordsToAdd.push({ fields });
+                    logger(`准备新增记录 (视频编号: ${video.aweme_id})`); // 日志中使用原始 ID
+                }
+            }
+          } // 结束遍历 API 返回的视频数据
+
+          // --- 批量写入/更新表格 ---
+
+          // 批量添加新记录
+          if (recordsToAdd.length > 0) {
+            logger(`正在批量添加 ${recordsToAdd.length} 条新记录...`);
+            try {
+              // 设置每批次的大小 (飞书 API 通常限制 500 或 1000，保守起见用 500)
+              const batchSize = 500;
+              // 分批次添加记录
+              for (let i = 0; i < recordsToAdd.length; i += batchSize) {
+                  const batch = recordsToAdd.slice(i, i + batchSize); // 获取当前批次的数据
+                  await table.addRecords(batch); // 调用 SDK 批量添加
+                  logger(`成功添加 ${i + batch.length}/${recordsToAdd.length} 条新记录`);
+              }
+              logger(`${recordsToAdd.length} 条新记录添加成功`);
+            } catch (addError) {
+              logger(`批量添加记录失败: ${addError}`);
+              // 可以在这里添加更详细的错误处理，例如记录失败的批次数据
+            }
+          } else {
+            logger("没有需要添加的新记录");
+          }
+
+          // 批量更新现有记录
+          if (recordsToUpdate.length > 0) {
+            logger(`正在批量更新 ${recordsToUpdate.length} 条现有记录...`);
+            try {
+              // 设置每批次的大小
+              const batchSize = 500;
+              // 分批次更新记录
+               for (let i = 0; i < recordsToUpdate.length; i += batchSize) {
+                  const batch = recordsToUpdate.slice(i, i + batchSize); // 获取当前批次的数据
+                  await table.setRecords(batch); // 调用 SDK 批量更新
+                  logger(`成功更新 ${i + batch.length}/${recordsToUpdate.length} 条记录`);
+              }
+              logger(`${recordsToUpdate.length} 条记录更新成功`);
+            } catch (updateError) {
+              logger(`批量更新记录失败: ${updateError}`);
+              // 可以在这里添加更详细的错误处理
+            }
+          } else {
+            logger("没有需要更新的现有记录");
+          }
+
+        } else {
+          // API 返回了 videos 数组，但数组为空
+          logger('API 返回了空的数据列表');
         }
-      } catch (error: any) {
-        setPreviewInfo(prev => prev + `\n写入数据到工作表时出错: ${error.message}\n错误详情: ${JSON.stringify(error, null, 2)}`);
-        console.error('写入数据失败:', error);
+      } else {
+        // API 响应格式不正确，或未包含 videos 字段
+        logger(`获取数据失败或响应格式不正确: ${response.data?.message || response.data?.detail || '未知错误'}`);
+      }
+    } catch (error) { // 捕获处理单个 URL 过程中的所有错误
+      logger(`处理链接 ${singleUrl} 时发生错误: ${error}`);
+      // 特别处理 Axios 错误，提供更具体的网络或状态码信息
+      if (axios.isAxiosError(error)) {
+        const errorDetail = error.response?.data?.detail || JSON.stringify(error.response?.data) || error.message;
+        logger(`Axios 错误详情: ${error.response?.status} - ${errorDetail}`);
       }
     }
-  } catch (error: any) {
-    // 显示错误信息
-    if (error instanceof Error && error.message.includes('Network Error')) {
-       setPreviewInfo(prev => prev + `\n\n请求出错: 网络错误。请检查后端服务器 (${API_BASE_URL}) 是否配置了正确的 CORS 策略。`);
-    } else if (axios.isAxiosError(error) && !error.response) {
-       setPreviewInfo(prev => prev + `\n\n请求出错: 网络错误或 CORS 策略阻止了请求。请检查后端服务器 (${API_BASE_URL}) 的 CORS 配置。`);
-    } else {
-       setPreviewInfo(prev => prev + `\n\n请求出错:\n${error.message}`);
-    }
-    console.error('请求失败:', error);
-  }
-}; 
+  } // 结束遍历输入的 URL
+
+  logger('所有链接处理完毕');
+} 
