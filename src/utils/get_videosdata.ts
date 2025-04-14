@@ -310,8 +310,13 @@ export async function getVideosData(
                 logger('开始分页获取所有记录...');
                 while (hasMore) {
                   try {
-                    // 调用 getRecords 获取一个批次的记录
-                    const response = await table.getRecords({
+                    // --- 修改：为 response 添加类型注解 ---
+                    const response: {
+                      records?: IRecord[];
+                      hasMore: boolean;
+                      pageToken?: string;
+                      total?: number; // 添加 total 属性类型
+                    } = await table.getRecords({
                       pageSize: 5000, // 每次最多获取 5000 条
                       pageToken: pageToken,
                     });
@@ -319,8 +324,10 @@ export async function getVideosData(
                     // 将当前批次的记录添加到总列表中
                     if (response.records) {
                       allRecords = allRecords.concat(response.records);
+                      // --- 修改：安全访问 total 属性 ---
+                      const totalCount = response.total ?? totalFetched; // 如果 total 不存在，使用已获取数量
                       totalFetched += response.records.length;
-                      logger(`已获取 ${totalFetched}/${response.total} 条记录...`);
+                      logger(`已获取 ${totalFetched}/${totalCount} 条记录...`);
                     } else {
                       logger('警告：getRecords 返回的批次中没有 records 数组');
                     }
