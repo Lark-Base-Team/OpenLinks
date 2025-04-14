@@ -294,8 +294,8 @@ async function queryLlmResults(
     logger(`本轮需要查询 ${videosToCheck.length} 个视频的 LLM 任务结果...`);
     // 更新按钮文本，显示已完成整理的视频数量
     const videosCompleted = Object.values(videoCompletionStatus).filter(status => status).length;
-    const totalVideosWithTasks = Object.keys(videoCompletionStatus).length;
-    setTextButtonText(`整理文案(${videosCompleted}/${totalVideosWithTasks})`);
+    const totalVideosForLlm = Object.keys(videoCompletionStatus).length; // 获取LLM阶段的总视频数
+    setTextButtonText(`整理文案(${videosCompleted}/${totalVideosForLlm})`);
 
 
     for (let i = 0; i < videosToCheck.length; i++) {
@@ -344,7 +344,7 @@ async function queryLlmResults(
 
      // 更新按钮文本
     const finalVideosCompleted = Object.values(videoCompletionStatus).filter(status => status).length;
-    setTextButtonText(`整理文案(${finalVideosCompleted}/${totalVideosWithTasks})`);
+    setTextButtonText(`整理文案(${finalVideosCompleted}/${totalVideosForLlm})`);
 
 
     // 如果所有视频都已完成，提前结束
@@ -370,7 +370,8 @@ async function queryLlmResults(
   }
 
   const finalVideosCompleted = Object.values(videoCompletionStatus).filter(status => status).length;
-  setTextButtonText(`整理文案(${finalVideosCompleted}/${totalVideosWithTasks}) - 完成`);
+  const totalVideosForLlm = Object.keys(videoCompletionStatus).length; // 获取LLM阶段的总视频数
+  setTextButtonText(`整理文案(${finalVideosCompleted}/${totalVideosForLlm}) - 完成`);
   logger("--- 阶段四完成 ---");
   return results;
 }
