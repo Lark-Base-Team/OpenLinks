@@ -167,7 +167,6 @@ async function ensureFieldsExist(table: ITable, logger: (message: string) => voi
     }
     // 如果字段已存在
     else if (existingFieldNames.has(targetFieldName)) {
-        logger(`字段 "${targetFieldName}" 已存在.`);
         // 确保现有字段的 ID 在 fieldMap 中 (通常在初始填充时已加入)
         if (!fieldMap[targetFieldName]) {
             const existingField = fieldsMeta.find(f => f.name === targetFieldName);

@@ -1,0 +1,39 @@
+/* src/styles/form.css */
+
+/* 全局容器 */
+.form-container {
+  padding: 16px;
+}
+
+/* 表单项 */
+.form-item {
+  display: flex;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+/* 标签 */
+.form-label {
+  width: 80px;
+  font-size: 14px;
+  color: #333;
+  text-align: right;
+  padding-right: 8px;
+}
+
+/* 输入框/选择框 */
+.form-input {
+  flex: 1;
+}
+
+/* 按钮组 */
+.form-button-group {
+  width: 100%;
+  margin-bottom: 16px;
+}
+
+/* 倒计时文本 */
+.countdown-text {
+  font-size: 14px;
+  color: #1890ff;
+}
